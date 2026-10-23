@@ -69,10 +69,31 @@ button,input,select,textarea{max-width:100%}
   .stats{gap:8px}
   .quick{gap:9px}
 }
+
+.auth-shell{min-height:100vh;display:grid;place-items:center;padding:20px;background:var(--bg)}
+.auth-card{width:min(460px,100%);background:#fff;border:1px solid var(--line);border-radius:18px;padding:24px;box-shadow:var(--shadow)}
+.auth-card h1{margin:0 0 8px;color:var(--green);font-size:25px}.auth-card p{color:var(--muted)}
+.auth-card .field{margin:14px 0}.auth-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.auth-message{font-size:13px;margin-top:12px;overflow-wrap:anywhere}.auth-status{font-size:12px;color:var(--muted);margin-top:12px}
+@media(max-width:540px){.auth-card{padding:18px}}
 </style>
 </head>
 <body>
-<div class="app">
+<section class="auth-shell" id="authShell">
+  <div class="auth-card">
+    <div style="font-size:30px">🐾</div>
+    <h1>Zuchtbuch – Anmeldung</h1>
+    <p>Melde dich an, damit dein Zuchtbuch sicher mit Supabase synchronisiert wird.</p>
+    <form id="authForm">
+      <div class="field"><label for="authEmail">E-Mail-Adresse</label><input id="authEmail" name="email" type="email" autocomplete="email" required></div>
+      <div class="field"><label for="authPassword">Passwort</label><input id="authPassword" name="password" type="password" autocomplete="current-password" minlength="8" required></div>
+      <div class="auth-actions"><button class="btn primary" type="submit" id="signInBtn">Anmelden</button><button class="btn" type="button" id="signUpBtn">Konto erstellen</button></div>
+      <div class="auth-actions"><button class="btn" type="button" id="resetPasswordBtn">Passwort zurücksetzen</button></div>
+      <div id="authMessage" class="auth-message" role="status"></div>
+      <div class="auth-status">Projekt: eslokikxsutshkuwqteg.supabase.co · Verwende nur dein eigenes Konto.</div>
+    </form>
+  </div>
+</section>
+<div class="app" id="mainApp" style="display:none">
 <aside class="sidebar">
   <div class="brand"><div class="brandmark">🐾</div><div><h1>Zuchtbuch</h1><small>Digitales Zwingerbuch</small></div></div>
   <div><div class="tenant-label">Aktiver Zuchtbetrieb</div><select id="tenantSelect" aria-label="Zuchtbetrieb wechseln"></select></div>
@@ -91,7 +112,7 @@ button,input,select,textarea{max-width:100%}
     <button data-page="calendar">🗓 Deckkalender & Geburtstermin</button>
     <button data-page="export">⇩ Export & Sicherung</button>
   </nav>
-  <div class="sidefoot">Prototyp · lokale Speicherung<br>Cloud-Synchronisierung noch nicht aktiv</div>
+  <div class="sidefoot">Sicher angemeldet<br>Cloud-Synchronisierung</div>
 </aside>
 <main class="main">
   <header class="topbar"><strong id="pageTitle">Übersicht</strong><div class="topmeta"><span class="pill" id="syncState">● Lokal gespeichert</span><span class="pill offline" id="netState">Offline-fähig</span><span class="avatar" id="avatar">Z</span></div></header>
@@ -99,7 +120,12 @@ button,input,select,textarea{max-width:100%}
 </main>
 </div>
 <div id="modalRoot"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+const SUPABASE_URL="https://eslokikxsutshkuwqteg.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY="sb_publishable_mBP3UIpXroV3OKqgqRN1Og_3T6CXgG4";
+const supabaseClient=window.supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY);
+let currentUser=null, cloudReady=false, saveTimer=null, applyingCloud=false;
 const STORE='zuchtbuch-prototype-v1';
 const titles={dashboard:'Übersicht',kennel:'Zwinger & Züchterdaten',dogs:'Hundebestand',litters:'Würfe & Welpen',titles:'Titel & Championate',ztp:'Zuchttauglichkeitsprüfungen (ZTP)',deworming:'Entwurmungsplan',vaccinations:'Impfplan',bitches:'Verzeichnis der Zuchthündinnen',studs:'Verzeichnis der Deckrüden',protocols:'Wurfprotokoll Teil 1',calendar:'Deckkalender & Geburtstermin',export:'Export & Datensicherung'};
 const fields={
@@ -114,7 +140,21 @@ protocols:[['dam','Hündin','text',true],['sire','Deckrüde','text'],['date','Wu
 let state=loadState(),page='dashboard',editing=null;
 function blankTenant(name='Meine Zucht'){return {id:uid(),name,kennel:{member:'',since:'',protectionDate:'',section11:'',vetOffice:'',breederName:'',street:'',city:'',phone:'',email:''},dogs:[],litters:[],titles:[],ztp:[],deworming:[],vaccinations:[],protocols:[],calendar:[]}}
 function loadState(){try{let s=JSON.parse(localStorage.getItem(STORE));if(s&&s.tenants?.length)return s}catch(e){};const t=blankTenant('Meine Zucht');return {active:t.id,tenants:[t]}}
-function save(){localStorage.setItem(STORE,JSON.stringify(state));document.getElementById('syncState').textContent='● Lokal gespeichert';}
+function save(){
+  localStorage.setItem(STORE,JSON.stringify(state));
+  const label=document.getElementById('syncState');
+  if(!currentUser){if(label)label.textContent='● Lokal gespeichert';return}
+  if(applyingCloud)return;
+  if(label)label.textContent='● Synchronisierung …';
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(async()=>{
+    try{
+      const {error}=await supabaseClient.from('zuchtbuch_data').upsert({user_id:currentUser.id,data:state,updated_at:new Date().toISOString()},{onConflict:'user_id'});
+      if(error)throw error;
+      if(label)label.textContent='● Mit Supabase gespeichert';
+    }catch(err){console.error('Supabase-Speicherung fehlgeschlagen',err);if(label)label.textContent='⚠ Cloud-Speicherung fehlgeschlagen';}
+  },350);
+}
 function uid(){return Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4)}
 function tenant(){return state.tenants.find(t=>t.id===state.active)||state.tenants[0]}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -123,7 +163,7 @@ function selectTenant(){const el=document.getElementById('tenantSelect');el.inne
 function setPage(p){page=p;editing=null;render()}
 function render(){selectTenant();document.getElementById('pageTitle').textContent=titles[page]||page;document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===page));document.getElementById('avatar').textContent=(tenant().name||'Z').trim().charAt(0).toUpperCase();const v=document.getElementById('view');if(page==='dashboard')v.innerHTML=dashboard();else if(page==='kennel')v.innerHTML=kennelPage();else if(page==='export')v.innerHTML=exportPage();else if(page==='calendar')v.innerHTML=calendarPage();else v.innerHTML=listPage(page);bindView()}
 function dashboard(){const t=tenant();return `<div class="welcome"><div><div class="eyebrow">Dein digitales Zwingerbuch</div><h2>Willkommen bei ${esc(t.name)}</h2><p>Deine Zuchtdaten an einem Ort – auf Handy, Tablet und Computer.</p></div><div class="actions"><button class="btn" data-action="newTenant">＋ Zuchtbetrieb hinzufügen</button><button class="btn primary" data-action="addDog">＋ Hund anlegen</button></div></div>
-<div class="notice"><strong>Prototyp-Hinweis:</strong> Daten werden in diesem Browser auf diesem Gerät gespeichert. Die Zuchtbetriebe sind in der Oberfläche getrennt, aber noch nicht durch echte Online-Benutzerkonten geschützt. Cloud-Synchronisierung ist noch nicht eingerichtet.</div>
+<div class="notice"><strong>Cloud-Speicherung aktiv:</strong> Änderungen werden mit deinem angemeldeten Supabase-Konto synchronisiert. Warte auf „Mit Supabase gespeichert“, bevor du die Seite schließt.</div>
 <div class="stats"><div class="stat"><div class="label">Hunde im Bestand</div><div class="num">${t.dogs.filter(d=>!['Abgegeben','Verstorben'].includes(d.status)).length}</div><div class="sub">Seite 2 deiner Vorlage</div></div><div class="stat"><div class="label">Zuchthündinnen</div><div class="num">${t.dogs.filter(d=>d.sex==='Hündin'&&(d.status==='Zuchthündin'||d.status==='Bestand')).length}</div><div class="sub">Verzeichnis der Hündinnen</div></div><div class="stat"><div class="label">Deckrüden</div><div class="num">${t.dogs.filter(d=>d.sex==='Rüde'&&(d.status==='Deckrüde'||d.status==='Bestand')).length}</div><div class="sub">Verzeichnis der Deckrüden</div></div><div class="stat"><div class="label">Dokumentierte Würfe</div><div class="num">${t.litters.length}</div><div class="sub">Wurfzusammenfassung</div></div></div>
 <div class="panel"><div class="panelhead"><div><h3>Schnellzugriff</h3><p>Häufig benötigte Bereiche deines Zuchtbuchs</p></div></div><div class="quickgrid">
 <button class="quick" data-page="dogs"><span class="ico">🐕</span><span><strong>Hundebestand</strong><small>Hunde und Kennzeichnungen</small></span></button>
@@ -165,7 +205,7 @@ ${records.length?`<div class="tablewrap"><table><thead><tr><th>Hündin</th><th>B
 <div class="panel"><h3>Berechnungsgrundlage</h3><p class="muted">Belegungsdatum plus eingestellte Anzahl an Kalendertagen. Monatslängen, Jahreswechsel und Schaltjahre werden automatisch berücksichtigt. Der tatsächliche Geburtstermin kann abweichen.</p></div>`;
 }
 
-function exportPage(){return `<div class="welcome"><div><div class="eyebrow">Datenhoheit</div><h2>Export & Datensicherung</h2><p>Erstelle eine Sicherung deiner Daten oder exportiere Tabellen zur Weiterverarbeitung.</p></div></div><div class="notice">Die Sicherung enthält nur den aktuell ausgewählten Zuchtbetrieb. Bewahre exportierte Dateien an einem sicheren Ort auf. Sie können personenbezogene Daten enthalten.</div><div class="recordgrid"><div class="record"><h4>📦 Vollständige Sicherung</h4><p>Alle Einträge dieses Zuchtbetriebs als JSON-Datei exportieren.</p><button class="btn primary" data-action="backup">JSON herunterladen</button></div><div class="record"><h4>📥 Sicherung wiederherstellen</h4><p>Eine zuvor exportierte JSON-Sicherung importieren.</p><input id="importFile" type="file" accept=".json,application/json" style="width:100%;margin:6px 0"><button class="btn" data-action="restore">Sicherung importieren</button></div><div class="record"><h4>👥 Zuchtbetrieb hinzufügen</h4><p>Eine getrennte lokale Datenumgebung für einen weiteren Züchter erstellen.</p><button class="btn" data-action="newTenant">Zuchtbetrieb erstellen</button></div></div><div class="panel" style="margin-top:16px"><h3>Aktiver Zuchtbetrieb</h3><p><strong>${esc(tenant().name)}</strong></p><p class="muted">Daten werden derzeit nur lokal in diesem Browser gespeichert. Für mehrere echte Benutzer mit Anmeldung, getrennten Berechtigungen und geräteübergreifender Synchronisierung ist ein Backend mit Zugriffskontrollen erforderlich.</p></div>`}
+function exportPage(){return `<div class="welcome"><div><div class="eyebrow">Datenhoheit</div><h2>Export & Datensicherung</h2><p>Erstelle eine Sicherung deiner Daten oder exportiere Tabellen zur Weiterverarbeitung.</p></div></div><div class="notice">Die Sicherung enthält nur den aktuell ausgewählten Zuchtbetrieb. Bewahre exportierte Dateien an einem sicheren Ort auf. Sie können personenbezogene Daten enthalten.</div><div class="recordgrid"><div class="record"><h4>📦 Vollständige Sicherung</h4><p>Alle Einträge dieses Zuchtbetriebs als JSON-Datei exportieren.</p><button class="btn primary" data-action="backup">JSON herunterladen</button></div><div class="record"><h4>📥 Sicherung wiederherstellen</h4><p>Eine zuvor exportierte JSON-Sicherung importieren.</p><input id="importFile" type="file" accept=".json,application/json" style="width:100%;margin:6px 0"><button class="btn" data-action="restore">Sicherung importieren</button></div><div class="record"><h4>👥 Zuchtbetrieb hinzufügen</h4><p>Eine getrennte lokale Datenumgebung für einen weiteren Züchter erstellen.</p><button class="btn" data-action="newTenant">Zuchtbetrieb erstellen</button></div></div><div class="panel" style="margin-top:16px"><h3>Aktiver Zuchtbetrieb</h3><p><strong>${esc(tenant().name)}</strong></p><p class="muted">Dein Zuchtbuch wird im Browser zwischengespeichert und mit deinem angemeldeten Supabase-Konto synchronisiert. Die Datenbankrichtlinien begrenzen den Zugriff auf dein Konto.</p></div>`}
 function addModal(type,id=null){const t=tenant();editing={type,id};let record=id?(t[type]||[]).find(r=>r.id===id):{};if(!record)record={};const fs=fields[type]||[];let html=`<div style="position:fixed;inset:0;background:#14251dcc;display:grid;place-items:center;padding:14px;z-index:10" id="modalBackdrop"><div class="panel" style="width:min(760px,100%);max-height:92vh;overflow:auto;margin:0"><div class="panelhead"><div><h3>${id?'Eintrag bearbeiten':'Neuen Eintrag anlegen'}</h3><p>${esc(titles[type]||type)}</p></div><button class="btn" data-action="closeModal">Schließen</button></div><form id="recordForm"><div class="formgrid">${fs.map(f=>fieldHtml(f,record[f[0]])).join('')}</div><div class="formactions"><button class="btn" type="button" data-action="closeModal">Abbrechen</button><button class="btn primary" type="submit">Speichern</button></div></form></div></div>`;document.getElementById('modalRoot').innerHTML=html;document.getElementById('recordForm').addEventListener('submit',e=>{e.preventDefault();let obj={...record,id:record.id||uid()};new FormData(e.target).forEach((v,k)=>obj[k]=String(v).trim());let a=t[type]||(t[type]=[]);if(id){let ix=a.findIndex(x=>x.id===id);if(ix>=0)a[ix]=obj;else a.push(obj)}else a.push(obj);save();document.getElementById('modalRoot').innerHTML='';editing=null;render()})}
 function fieldHtml(f,value){let [key,label,type,required,options]=f;let inp='';if(type==='select')inp=`<select name="${key}" ${required?'required':''}><option value="">Bitte wählen</option>${options.map(o=>`<option ${value===o?'selected':''}>${o}</option>`).join('')}</select>`;else if(type==='textarea')inp=`<textarea name="${key}" ${required?'required':''}>${esc(value||'')}</textarea>`;else inp=`<input name="${key}" type="${type}" value="${esc(value||'')}" ${required?'required':''} ${type==='number'?'min="0"':''}>`;return `<div class="field ${type==='textarea'?'full':''}"><label>${label}${required?' *':''}</label>${inp}</div>`}
 function bindView(){const cf=document.getElementById('calendarForm');if(cf)cf.addEventListener('submit',e=>{e.preventDefault();const fd=new FormData(cf);const matingDate=String(fd.get('matingDate'));const days=Math.max(1,Math.min(100,Number(fd.get('gestationDays')||63)));const expected=new Date(matingDate+'T12:00:00');expected.setDate(expected.getDate()+days);const expectedBirth=[expected.getFullYear(),String(expected.getMonth()+1).padStart(2,'0'),String(expected.getDate()).padStart(2,'0')].join('-');const damId=String(fd.get('damId'));const sireId=String(fd.get('sireId')||'');tenant().calendar=tenant().calendar||[];tenant().calendar.push({id:uid(),damId,sireId,matingDate,gestationDays:days,expectedBirth,notes:String(fd.get('notes')||'').trim()});save();render()});const kf=document.getElementById('kennelForm');if(kf)kf.addEventListener('submit',e=>{e.preventDefault();const obj={};new FormData(kf).forEach((v,k)=>obj[k]=String(v).trim());tenant().kennel=obj;save();alert('Zwinger- und Züchterdaten gespeichert.');render()});const sb=document.getElementById('searchBox');if(sb)sb.addEventListener('input',()=>document.querySelectorAll('#dataRows tr').forEach(tr=>tr.style.display=tr.dataset.search.includes(sb.value.toLowerCase())?'':'none'))}
@@ -179,8 +219,55 @@ function csv(type){let rows=tenant()[type]||[];if(type==='bitches')rows=tenant()
 function slug(s){return s.toLowerCase().replace(/[^a-z0-9äöüß]+/gi,'-').replace(/^-|-$/g,'')||'zuchtbetrieb'}
 function download(content,name,type){const blob=new Blob([content],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url)}
 if('serviceWorker'in navigator && location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(()=>{});
-window.addEventListener('online',()=>document.getElementById('netState').textContent='Online');window.addEventListener('offline',()=>document.getElementById('netState').textContent='Offline');document.getElementById('netState').textContent=navigator.onLine?'Online · lokal nutzbar':'Offline';
-render();
+window.addEventListener('online',()=>document.getElementById('netState').textContent='Online');window.addEventListener('offline',()=>document.getElementById('netState').textContent='Offline');document.getElementById('netState').textContent=navigator.onLine?'Online':'Offline';
+
+function showAuth(message=''){document.getElementById('authShell').style.display='grid';document.getElementById('mainApp').style.display='none';document.getElementById('authMessage').textContent=message;}
+function showApp(){document.getElementById('authShell').style.display='none';document.getElementById('mainApp').style.display='grid';}
+async function loadUserData(user){
+  currentUser=user;
+  const {data:row,error}=await supabaseClient.from('zuchtbuch_data').select('data').eq('user_id',user.id).maybeSingle();
+  if(error)throw error;
+  if(row && row.data && Array.isArray(row.data.tenants) && row.data.tenants.length){
+    applyingCloud=true;state=row.data;localStorage.setItem(STORE,JSON.stringify(state));applyingCloud=false;
+  }else{
+    // Erstmalige Übernahme: lokale Sicherung bleibt erhalten und wird diesem Konto zugeordnet.
+    if(!state?.tenants?.length){const t=blankTenant('Von den kleinen Ganoven');state={active:t.id,tenants:[t]};}
+    if(state.tenants.length===1 && (!state.tenants[0].name || state.tenants[0].name==='Meine Zucht'))state.tenants[0].name='Von den kleinen Ganoven';
+    await supabaseClient.from('zuchtbuch_data').upsert({user_id:user.id,data:state,updated_at:new Date().toISOString()},{onConflict:'user_id'}).then(({error:e})=>{if(e)throw e});
+    localStorage.setItem(STORE,JSON.stringify(state));
+  }
+  showApp();render();
+  document.getElementById('syncState').textContent='● Mit Supabase gespeichert';
+  const meta=document.querySelector('.topmeta');
+  if(meta && !document.getElementById('authEmailLabel')){const label=document.createElement('span');label.id='authEmailLabel';label.className='pill';label.textContent=user.email||'Angemeldet';meta.appendChild(label);const out=document.createElement('button');out.className='btn small';out.id='signOutBtn';out.textContent='Abmelden';out.addEventListener('click',async()=>{await supabaseClient.auth.signOut();currentUser=null;showAuth('Du wurdest abgemeldet.');});meta.appendChild(out);}
+}
+async function handleAuth(){
+  const {data:{session},error}=await supabaseClient.auth.getSession();
+  if(error){showAuth('Anmeldung konnte nicht geprüft werden: '+error.message);return}
+  if(session?.user){try{await loadUserData(session.user)}catch(e){showAuth('Cloud-Daten konnten nicht geladen werden: '+e.message)} }else showAuth();
+}
+document.getElementById('authForm').addEventListener('submit',async e=>{
+  e.preventDefault();const email=document.getElementById('authEmail').value.trim();const password=document.getElementById('authPassword').value;const msg=document.getElementById('authMessage');
+  document.getElementById('signInBtn').disabled=true;msg.textContent='Anmeldung wird geprüft …';
+  try{const {data,error}=await supabaseClient.auth.signInWithPassword({email,password});if(error)throw error;await loadUserData(data.user)}catch(err){msg.textContent='Anmeldung fehlgeschlagen: '+err.message}finally{document.getElementById('signInBtn').disabled=false}
+});
+document.getElementById('signUpBtn').addEventListener('click',async()=>{
+  const email=document.getElementById('authEmail').value.trim();const password=document.getElementById('authPassword').value;const msg=document.getElementById('authMessage');
+  if(!email||password.length<8){msg.textContent='Bitte E-Mail und ein Passwort mit mindestens 8 Zeichen eingeben.';return}
+  msg.textContent='Konto wird erstellt …';
+  const {data,error}=await supabaseClient.auth.signUp({email,password});
+  if(error){msg.textContent='Konto konnte nicht erstellt werden: '+error.message;return}
+  if(data.session && data.user){try{await loadUserData(data.user)}catch(err){msg.textContent='Konto erstellt, aber Cloud-Daten konnten nicht geladen werden: '+err.message}}
+  else msg.textContent='Registrierung gestartet. Bitte bestätige die E-Mail, die Supabase dir geschickt hat. Danach kannst du dich anmelden.';
+});
+document.getElementById('resetPasswordBtn').addEventListener('click',async()=>{
+  const email=document.getElementById('authEmail').value.trim();const msg=document.getElementById('authMessage');
+  if(!email){msg.textContent='Bitte zuerst deine E-Mail-Adresse eingeben.';return}
+  const {error}=await supabaseClient.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});
+  msg.textContent=error?'Passwort-Reset fehlgeschlagen: '+error.message:'Falls ein Konto mit dieser Adresse existiert, wurde eine E-Mail zum Zurücksetzen angefordert.';
+});
+supabaseClient.auth.onAuthStateChange((event,session)=>{if(event==='SIGNED_OUT'){currentUser=null;showAuth('Bitte melde dich an.')} });
+handleAuth();
 </script>
 </body>
 </html>
